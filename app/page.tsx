@@ -85,7 +85,8 @@ const TIME_SLOTS = [
 const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 const scoreOf = (name: string) => PLAYER_SCORES[name] ?? 0;
 
-// maak een array met alle 4-tallen ipv een generator
+// VERVANG deze helper (geen generator meer)
+// bouwt alle 4-tallen als array, werkt met elke TS target
 function combinations4<T>(arr: T[]): Array<[T, T, T, T]> {
   const res: Array<[T, T, T, T]> = [];
   const n = arr.length;
@@ -839,21 +840,21 @@ export default function Page() {
     const { opponentCount } = buildCounts();
     const result: Reservation[] = [];
     const mt: Record<string, 'single' | 'double'> = {};
-
+  
     const hours = sundays.flatMap((d) =>
       TIME_SLOTS.map((slot) => ({
         dateStr: format(d, 'yyyy-MM-dd'),
         slotId: slot.id,
       }))
     );
-
+  
     const oppSeen = (a: string, b: string) => opponentCount[pairKey(a, b)] || 0;
-
+  
     hours.forEach((hr, hourIdx) => {
       const groups = hourIdx % 2 === 0 ? [4, 4, 2] : [4, 2, 2];
       const used = new Set<string>();
       const available = new Set(playersAvailableFor(hr.dateStr, hr.slotId));
-
+  
       const pickSingles = (): [string, string] | null => {
         const cand = PLAYERS.filter((p) => !used.has(p) && available.has(p));
         if (cand.length < 2) return null;
@@ -862,8 +863,7 @@ export default function Page() {
         let bestScore = Infinity;
         for (let i = 0; i < sorted.length - 1; i++) {
           for (let j = i + 1; j < sorted.length; j++) {
-            const a = sorted[i],
-              b = sorted[j];
+            const a = sorted[i], b = sorted[j];
             const diff = Math.abs(scoreOf(a) - scoreOf(b));
             const s = diff * 12 + oppSeen(a, b) * 60 + Math.random() * 0.5;
             if (s < bestScore) {
@@ -874,49 +874,28 @@ export default function Page() {
         }
         return best;
       };
-
-      const pickDoubles = (): {
-        teamA: [string, string];
-        teamB: [string, string];
-      } | null => {
+  
+      const pickDoubles = (): { teamA: [string, string]; teamB: [string, string] } | null => {
         const cand = PLAYERS.filter((p) => !used.has(p) && available.has(p));
         if (cand.length < 4) return null;
-        let best: { teamA: [string, string]; teamB: [string, string] } | null =
-          null;
+        let best: { teamA: [string, string]; teamB: [string, string] } | null = null;
         let bestScore = Infinity;
-        // wordt:
-const quads = combinations4(cand);
-for (const [a, b, c, d] of quads) {
-  // ...
-}
- {
+  
+        // >>> FIX: destructure per quad binnen de loop
+        for (const [a, b, c, d] of combinations4(cand)) {
           const splits: Array<[[string, string], [string, string]]> = [
-            [
-              [a, b],
-              [c, d],
-            ],
-            [
-              [a, c],
-              [b, d],
-            ],
-            [
-              [a, d],
-              [b, c],
-            ],
+            [[a, b], [c, d]],
+            [[a, c], [b, d]],
+            [[a, d], [b, c]],
           ];
           for (const [t1, t2] of splits) {
-            const [x1, x2] = t1,
-              [y1, y2] = t2;
+            const [x1, x2] = t1, [y1, y2] = t2;
             const sumA = scoreOf(x1) + scoreOf(x2);
             const sumB = scoreOf(y1) + scoreOf(y2);
             const sumDiff = Math.abs(sumA - sumB);
             let s = 0;
             s += sumDiff * 15;
-            s +=
-              oppSeen(x1, y1) +
-              oppSeen(x1, y2) +
-              oppSeen(x2, y1) +
-              oppSeen(x2, y2);
+            s += oppSeen(x1, y1) + oppSeen(x1, y2) + oppSeen(x2, y1) + oppSeen(x2, y2);
             s += Math.random() * 0.5;
             if (s < bestScore) {
               bestScore = s;
@@ -926,15 +905,14 @@ for (const [a, b, c, d] of quads) {
         }
         return best;
       };
-
+  
       groups.forEach((size, idxInHour) => {
         const court = idxInHour + 1;
         if (size === 2) {
           const pair = pickSingles();
           if (!pair) return;
           const [a, b] = pair;
-          used.add(a);
-          used.add(b);
+          used.add(a); used.add(b);
           result.push({
             date: hr.dateStr,
             timeSlot: hr.slotId,
@@ -948,8 +926,7 @@ for (const [a, b, c, d] of quads) {
           const grp = pickDoubles();
           if (!grp) return;
           const { teamA, teamB } = grp;
-          const [x1, x2] = teamA,
-            [y1, y2] = teamB;
+          const [x1, x2] = teamA, [y1, y2] = teamB;
           [x1, x2, y1, y2].forEach((p) => used.add(p));
           result.push({
             date: hr.dateStr,
@@ -963,10 +940,11 @@ for (const [a, b, c, d] of quads) {
         }
       });
     });
-
+  
     setReservations(result);
     setMatchTypes(mt);
   };
+  
 
   const planSelectedWeek = () => {
     const { opponentCount } = buildCounts(selectedDate);
@@ -975,7 +953,7 @@ for (const [a, b, c, d] of quads) {
       localStorage.setItem(RESERV_KEY, JSON.stringify(next));
       return next;
     });
-
+  
     const result: Reservation[] = [];
     const mt: Record<string, 'single' | 'double'> = {};
     const hours = TIME_SLOTS.map((slot) => ({
@@ -983,12 +961,12 @@ for (const [a, b, c, d] of quads) {
       slotId: slot.id,
     }));
     const oppSeen = (a: string, b: string) => opponentCount[pairKey(a, b)] || 0;
-
+  
     hours.forEach((hr, hourIdx) => {
       const groups = hourIdx % 2 === 0 ? [4, 4, 2] : [4, 2, 2];
       const used = new Set<string>();
       const available = new Set(playersAvailableFor(hr.dateStr, hr.slotId));
-
+  
       const pickSingles = (): [string, string] | null => {
         const cand = PLAYERS.filter((p) => !used.has(p) && available.has(p));
         if (cand.length < 2) return null;
@@ -997,8 +975,7 @@ for (const [a, b, c, d] of quads) {
         let bestScore = Infinity;
         for (let i = 0; i < sorted.length - 1; i++) {
           for (let j = i + 1; j < sorted.length; j++) {
-            const a = sorted[i],
-              b = sorted[j];
+            const a = sorted[i], b = sorted[j];
             const diff = Math.abs(scoreOf(a) - scoreOf(b));
             const s = diff * 12 + oppSeen(a, b) * 60 + Math.random() * 0.5;
             if (s < bestScore) {
@@ -1009,44 +986,28 @@ for (const [a, b, c, d] of quads) {
         }
         return best;
       };
-
-      const pickDoubles = (): {
-        teamA: [string, string];
-        teamB: [string, string];
-      } | null => {
+  
+      const pickDoubles = (): { teamA: [string, string]; teamB: [string, string] } | null => {
         const cand = PLAYERS.filter((p) => !used.has(p) && available.has(p));
         if (cand.length < 4) return null;
-        let best: { teamA: [string, string]; teamB: [string, string] } | null =
-          null;
+        let best: { teamA: [string, string]; teamB: [string, string] } | null = null;
         let bestScore = Infinity;
+  
+        // >>> FIX: idem destructure per quad
         for (const [a, b, c, d] of combinations4(cand)) {
           const splits: Array<[[string, string], [string, string]]> = [
-            [
-              [a, b],
-              [c, d],
-            ],
-            [
-              [a, c],
-              [b, d],
-            ],
-            [
-              [a, d],
-              [b, c],
-            ],
+            [[a, b], [c, d]],
+            [[a, c], [b, d]],
+            [[a, d], [b, c]],
           ];
           for (const [t1, t2] of splits) {
-            const [x1, x2] = t1,
-              [y1, y2] = t2;
+            const [x1, x2] = t1, [y1, y2] = t2;
             const sumA = scoreOf(x1) + scoreOf(x2);
             const sumB = scoreOf(y1) + scoreOf(y2);
             const sumDiff = Math.abs(sumA - sumB);
             let s = 0;
             s += sumDiff * 15;
-            s +=
-              oppSeen(x1, y1) +
-              oppSeen(x1, y2) +
-              oppSeen(x2, y1) +
-              oppSeen(x2, y2);
+            s += oppSeen(x1, y1) + oppSeen(x1, y2) + oppSeen(x2, y1) + oppSeen(x2, y2);
             s += Math.random() * 0.5;
             if (s < bestScore) {
               bestScore = s;
@@ -1056,15 +1017,14 @@ for (const [a, b, c, d] of quads) {
         }
         return best;
       };
-
+  
       groups.forEach((size, idxInHour) => {
         const court = idxInHour + 1;
         if (size === 2) {
           const pair = pickSingles();
           if (!pair) return;
           const [a, b] = pair;
-          used.add(a);
-          used.add(b);
+          used.add(a); used.add(b);
           result.push({
             date: hr.dateStr,
             timeSlot: hr.slotId,
@@ -1078,8 +1038,7 @@ for (const [a, b, c, d] of quads) {
           const grp = pickDoubles();
           if (!grp) return;
           const { teamA, teamB } = grp;
-          const [x1, x2] = teamA,
-            [y1, y2] = teamB;
+          const [x1, x2] = teamA, [y1, y2] = teamB;
           [x1, x2, y1, y2].forEach((p) => used.add(p));
           result.push({
             date: hr.dateStr,
@@ -1093,7 +1052,7 @@ for (const [a, b, c, d] of quads) {
         }
       });
     });
-
+  
     setReservations((prev) => {
       const next = [...prev, ...result];
       localStorage.setItem(RESERV_KEY, JSON.stringify(next));
@@ -1101,6 +1060,7 @@ for (const [a, b, c, d] of quads) {
     });
     setMatchTypes((prev) => ({ ...prev, ...mt }));
   };
+  
 
   /* --- UI helpers --- */
   const renderDateOption = (d: Date) => {
