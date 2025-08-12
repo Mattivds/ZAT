@@ -85,14 +85,22 @@ const TIME_SLOTS = [
 const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
 const scoreOf = (name: string) => PLAYER_SCORES[name] ?? 0;
 
-function* combinations4<T>(arr: T[]) {
+// maak een array met alle 4-tallen ipv een generator
+function combinations4<T>(arr: T[]): Array<[T, T, T, T]> {
+  const res: Array<[T, T, T, T]> = [];
   const n = arr.length;
-  for (let i = 0; i < n - 3; i++)
-    for (let j = i + 1; j < n - 2; j++)
-      for (let k = j + 1; k < n - 1; k++)
-        for (let l = k + 1; l < n; l++)
-          yield [arr[i], arr[j], arr[k], arr[l]] as [T, T, T, T];
+  for (let i = 0; i < n - 3; i++) {
+    for (let j = i + 1; j < n - 2; j++) {
+      for (let k = j + 1; k < n - 1; k++) {
+        for (let l = k + 1; l < n; l++) {
+          res.push([arr[i], arr[j], arr[k], arr[l]]);
+        }
+      }
+    }
+  }
+  return res;
 }
+
 
 /* =========================
    Tennis net visual
@@ -876,7 +884,12 @@ export default function Page() {
         let best: { teamA: [string, string]; teamB: [string, string] } | null =
           null;
         let bestScore = Infinity;
-        for (const [a, b, c, d] of combinations4(cand)) {
+        // wordt:
+const quads = combinations4(cand);
+for (const [a, b, c, d] of quads) {
+  // ...
+}
+ {
           const splits: Array<[[string, string], [string, string]]> = [
             [
               [a, b],
