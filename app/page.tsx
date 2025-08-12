@@ -534,10 +534,10 @@ export default function Page() {
       to,
       date,
       slot,
-      status: 'pending',
+      status: 'pending' as const,
       createdAt: Date.now(),
     };
-    setChallenges((prev) => {
+    setChallenges((prev): Challenge[] => {
       const next = [c, ...prev];
       saveChallenges(next);
       return next;
@@ -594,9 +594,9 @@ export default function Page() {
       localStorage.setItem(RESERV_KEY, JSON.stringify(next));
       return next;
     });
-    setChallenges((prev) => {
-      const next = prev.map((x) =>
-        x.id === c.id ? { ...x, status: 'accepted' } : x
+    setChallenges((prev): Challenge[] => {
+      const next = prev.map((x): Challenge =>
+        x.id === c.id ? { ...x, status: 'accepted' as const } : x
       );
       saveChallenges(next);
       return next;
@@ -615,9 +615,9 @@ export default function Page() {
   };
 
   const declineChallenge = (c: Challenge) => {
-    setChallenges((prev) => {
-      const next = prev.map((x) =>
-        x.id === c.id ? { ...x, status: 'declined' } : x
+    setChallenges((prev): Challenge[] => {
+      const next = prev.map((x): Challenge =>
+        x.id === c.id ? { ...x, status: 'declined' as const } : x
       );
       saveChallenges(next);
       return next;
@@ -650,10 +650,14 @@ export default function Page() {
       localStorage.setItem(RESERV_KEY, JSON.stringify(next));
       return next;
     });
-    setChallenges((prev) => {
-      const next = prev.map((x) =>
+    setChallenges((prev): Challenge[] => {
+      const next = prev.map((x): Challenge =>
         x.id === c.id
-          ? { ...x, status: 'completed', result: { winner, loser } }
+          ? {
+              ...x,
+              status: 'completed' as const,
+              result: { winner, loser },
+            }
           : x
       );
       saveChallenges(next);
@@ -1775,7 +1779,7 @@ export default function Page() {
             <p className="text-gray-600">Reserveer je terrein</p>
           </div>
 
-          <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2">
             <NotificationsPanel />
             {isAdmin && (
               <button
