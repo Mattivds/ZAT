@@ -1190,7 +1190,7 @@ export default function Page() {
       );
     }
 
-    // Kaart zonder reservatie: iedereen ziet type-selecties (eerste speler kan meteen 'Ik speel mee')
+    // Kaart zonder reservatie: controls bovenaan
     const availableSet = new Set(playersAvailableFor(date, timeSlot));
     const canFirstJoin =
       !!myName &&
@@ -1205,7 +1205,7 @@ export default function Page() {
             className={`px-3 py-1 rounded text-sm font-bold ${
               matchType === 'single'
                 ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-700'
+                : 'bg-white text-gray-800'
             }`}
           >
             👤👤
@@ -1215,13 +1215,14 @@ export default function Page() {
             className={`px-3 py-1 rounded text-sm font-bold ${
               matchType === 'double'
                 ? 'bg-blue-600 text-white'
-                : 'bg-white text-gray-700'
+                : 'bg-white text-gray-800'
             }`}
           >
             👥👥
           </button>
           <select
-            className="px-2 py-1 rounded text-sm bg-white border border-gray-300"
+            // *** Zichtbaar op mobiel: altijd donkere tekst op witte achtergrond
+            className="px-2 py-1 rounded text-sm bg-white text-gray-900 border border-gray-300"
             value={getCategory(date, timeSlot, court)}
             onChange={(e) =>
               setCategoryFor(
@@ -1504,7 +1505,7 @@ export default function Page() {
   };
 
   /* =========================
-     Notifications UI
+     Notifications UI (mobiel + desktop varianten)
   ========================= */
   const [notifOpen, setNotifOpen] = useState(false);
   const NotificationsPanel = () => {
@@ -1519,6 +1520,12 @@ export default function Page() {
       setMessages((prev) =>
         prev.map((m) => (m.to === myName ? { ...m, read: true } : m))
       );
+    };
+
+    const clearAllMine = () => {
+      const ok = window.confirm('Alle meldingen voor jou wissen?');
+      if (!ok) return;
+      setMessages((prev) => prev.filter((m) => m.to !== myName));
     };
 
     return (
@@ -1539,35 +1546,116 @@ export default function Page() {
           )}
         </button>
 
+        {/* Desktop popover */}
         {notifOpen && (
-          <div className="absolute right-0 mt-2 w-96 max-w-[90vw] bg-white rounded-xl shadow-xl border border-gray-200 z-50">
-            <div className="p-3 border-b flex items-center justify-between">
-              <div className="font-semibold text-gray-800">Meldingen</div>
-              <button
-                onClick={() => setNotifOpen(false)}
-                className="text-gray-500 hover:text-gray-800"
-              >
-                ✕
-              </button>
+          <div className="hidden md:block">
+            <div className="absolute right-0 mt-2 w-[24rem] max-w-[95vw] bg-white rounded-xl shadow-xl border border-gray-200 z-[60]">
+              <div className="p-3 border-b flex items-center gap-2 justify-between">
+                <div className="font-semibold text-gray-800">Meldingen</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={markAllRead}
+                    className="text-xs px-2 py-1 bg-gray-100 rounded border border-gray-200 text-gray-700"
+                    title="Markeer alles als gelezen"
+                  >
+                    Alles gelezen
+                  </button>
+                  <button
+                    onClick={clearAllMine}
+                    className="text-xs px-2 py-1 bg-red-50 rounded border border-red-200 text-red-700"
+                    title="Wis alle meldingen"
+                  >
+                    Wis alles
+                  </button>
+                  <button
+                    onClick={() => setNotifOpen(false)}
+                    className="text-gray-500 hover:text-gray-800"
+                    title="Sluiten"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+              <div className="max-h-96 overflow-y-auto p-3">
+                {mine.length === 0 ? (
+                  <p className="text-sm text-gray-500">Geen meldingen.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {mine.map((m) => (
+                      <li
+                        key={m.id}
+                        className="p-2 bg-white border rounded text-sm text-gray-800 break-words"
+                      >
+                        {m.text}
+                        <div className="mt-1 text-[10px] text-gray-500">
+                          {new Date(m.createdAt).toLocaleString()}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
-            <div className="max-h-96 overflow-auto p-3">
-              {mine.length === 0 ? (
-                <p className="text-sm text-gray-500">Geen meldingen.</p>
-              ) : (
-                <ul className="space-y-2">
-                  {mine.map((m) => (
-                    <li
-                      key={m.id}
-                      className="p-2 bg-white border rounded text-sm text-gray-800"
-                    >
-                      {m.text}
-                      <div className="mt-1 text-[10px] text-gray-500">
-                        {new Date(m.createdAt).toLocaleString()}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
+          </div>
+        )}
+
+        {/* Mobiel bottom sheet */}
+        {notifOpen && (
+          <div className="md:hidden">
+            {/* semi-transparante achtergrond */}
+            <div
+              className="fixed inset-0 bg-black/40 z-[80]"
+              onClick={() => setNotifOpen(false)}
+            />
+            <div className="fixed left-0 right-0 bottom-0 z-[90] bg-white rounded-t-2xl shadow-2xl border border-gray-200 max-h-[75vh]">
+              <div className="p-3 border-b flex items-center justify-between gap-2">
+                <div className="font-semibold text-gray-800">Meldingen</div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={markAllRead}
+                    className="text-xs px-2 py-1 bg-gray-100 rounded border border-gray-200 text-gray-700"
+                    title="Markeer alles als gelezen"
+                  >
+                    Alles gelezen
+                  </button>
+                  <button
+                    onClick={clearAllMine}
+                    className="text-xs px-2 py-1 bg-red-50 rounded border border-red-200 text-red-700"
+                    title="Wis alle meldingen"
+                  >
+                    Wis alles
+                  </button>
+                  <button
+                    onClick={() => setNotifOpen(false)}
+                    className="text-gray-500 hover:text-gray-800"
+                    title="Sluiten"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+              <div
+                className="p-3 overflow-y-auto"
+                style={{ maxHeight: '60vh' }}
+              >
+                {mine.length === 0 ? (
+                  <p className="text-sm text-gray-500">Geen meldingen.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {mine.map((m) => (
+                      <li
+                        key={m.id}
+                        className="p-2 bg-white border rounded text-sm text-gray-800 break-words"
+                      >
+                        {m.text}
+                        <div className="mt-1 text-[10px] text-gray-500">
+                          {new Date(m.createdAt).toLocaleString()}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
           </div>
         )}
