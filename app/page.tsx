@@ -15,8 +15,21 @@ interface Reservation {
   court: number; // 1..3
   matchType: 'single' | 'double';
   category: MatchCategory; // training | wedstrijd
-  players: string[]; // single: [a,b], double: [x1,x2,y1,y2]
-  result?: { winner: string; loser: string }; // uitslag (alleen single + wedstrijd)
+  // Bij single: players: [a,b]
+  // Bij double: players: [x1,x2,y1,y2]
+  // Lege plekken worden bewaard als '' zodat spelers stapsgewijs kunnen invullen
+  players: string[];
+  // Resultaat:
+  // single:  { winner: 'A', loser: 'B' }
+  // double:  { winners: ['A','B'], losers: ['C','D'] }
+  result?: {
+    winner?: string;
+    loser?: string;
+    winners?: [string, string];
+    losers?: [string, string];
+  };
+  // Meldingen: eenmaal vol => true, zodat we niet dubbel sturen
+  notifiedFull?: boolean;
 }
 
 type Availability = Record<string, Record<string, Record<string, boolean>>>;
@@ -25,6 +38,19 @@ interface UserSession {
   playerName: string;
 }
 
+type Message = {
+  id: string;
+  to: string; // playerName
+  text: string;
+  createdAt: number;
+  read: boolean;
+};
+
+type TabKey = 'reservatie' | 'beschikbaarheid' | 'ladderEnkel' | 'ladderDubbel';
+
+/* =========================
+   Data
+========================= */
 const PLAYERS_SCORES: Record<string, number> = {
   Mattias: 55,
   Ruben: 70,
@@ -41,16 +67,31 @@ const PLAYERS_SCORES: Record<string, number> = {
   Wout: 20,
   SanderB: 75,
 };
-
 const PLAYERS = Object.keys(PLAYERS_SCORES);
+
+// Hardcoded wachtwoorden
+const ADMIN_NAME = 'Mattias';
+const PASSWORDS: Record<string, string> = {
+  Mattias: 'ZAT2025*',
+  Ruben: 'Ruben2025!',
+  Seppe: 'Seppe2025!',
+  Tibo: 'Tibo2025!',
+  Aaron: 'Aaron2025!',
+  Koenraad: 'Koenraad2025!',
+  Brent: 'Brent2025!',
+  Nicolas: 'Nicolas2025!',
+  Remi: 'Remi2025!',
+  SanderD: 'SanderD2025!',
+  Gilles: 'Gilles2025!',
+  Thomas: 'Thomas2025!',
+  Wout: 'Wout2025!',
+  SanderB: 'SanderB2025!',
+};
 
 const TIME_SLOTS = [
   { id: '18u30-19u30', label: '18u30-19u30' },
   { id: '19u30-20u30', label: '19u30-20u30' },
 ];
-
-const ADMIN_NAME = 'Mattias';
-const ADMIN_PASSWORD = 'ZAT2025*';
 
 /* =========================
    Utils
@@ -83,9 +124,10 @@ const CATEGORY_KEY = 'zat-court-category';
 const SELECTED_DATE_KEY = 'zat-selected-date';
 const SESSION_KEY = 'zat-session';
 const ACTIVE_TAB_KEY = 'zat-active-tab';
+const MSG_KEY = 'zat-messages';
 
 /* =========================
-   UI bits
+   Small UI bits
 ========================= */
 const PlayerChip = ({
   name,
@@ -126,20 +168,26 @@ const PlayerChip = ({
 };
 
 const TennisNet = () => (
-  <div className="relative w-full h-8 my-1" aria-hidden>
-    <div className="absolute top-0 left-0 right-0 h-1 bg-white rounded-sm" />
+  <div className="relative w-full h-10 my-1" aria-hidden>
+    {/* Witte band boven */}
+    <div className="absolute top-0 left-0 right-0 h-1.5 bg-white rounded-sm shadow-sm" />
+    {/* Net-raster */}
     <div
       className="absolute left-0 right-0 bottom-0"
       style={{
-        top: '0.5rem',
-        backgroundSize: '6px 6px',
+        top: '0.6rem',
         backgroundImage:
-          'linear-gradient(to right, rgba(255,255,255,0.45) 1px, transparent 1px),' +
+          // verticale draden
+          'linear-gradient(to right, rgba(255,255,255,0.5) 1px, transparent 1px),' +
+          // horizontale draden
           'linear-gradient(to bottom, rgba(255,255,255,0.45) 1px, transparent 1px)',
+        backgroundSize: '8px 8px',
+        backgroundPosition: 'center',
       }}
     />
-    <div className="absolute left-0 right-0" style={{ top: '0.5rem' }}>
-      <div className="border-t border-white/40" />
+    {/* Dikte/koord net */}
+    <div className="absolute left-0 right-0" style={{ top: '0.6rem' }}>
+      <div className="border-t border-white/60" />
     </div>
   </div>
 );
@@ -149,7 +197,7 @@ const TennisNet = () => (
 ========================= */
 export default function Page() {
   /* --- Dates --- */
-  const startDate = new Date(2025, 8, 28); // 28 sept 2025 (maand 0-based)
+  const startDate = new Date(2025, 8, 28); // 28 sept 2025
   const sundays = useMemo(
     () => Array.from({ length: 20 }, (_, i) => addWeeks(startDate, i)),
     []
@@ -172,15 +220,17 @@ export default function Page() {
   const [categories, setCategories] = useState<Record<string, MatchCategory>>(
     {}
   );
-  const [selectedPlayers, setSelectedPlayers] = useState<
-    Record<string, string[]>
-  >({});
 
-  /* --- Tabs --- */
-  type TabKey = 'reservatie' | 'beschikbaarheid' | 'ladder';
+  /* --- Messages (meldingen) --- */
+  const [messages, setMessages] = useState<Message[]>([]);
+
+  /* --- UI state --- */
   const [activeTab, setActiveTab] = useState<TabKey>('reservatie');
+  const [loginName, setLoginName] = useState(PLAYERS[0]);
+  const [loginPass, setLoginPass] = useState('');
+  const [loginErr, setLoginErr] = useState<string | null>(null);
 
-  /* --- UI helpers --- */
+  /* --- Helpers for UI --- */
   const selectClass =
     'w-full p-2 border border-gray-300 rounded text-sm font-medium focus:ring-1 focus:ring-blue-500 bg-white text-gray-900 placeholder-gray-400';
   const inputClass =
@@ -189,7 +239,9 @@ export default function Page() {
   const courtClass =
     'relative bg-green-600 rounded-xl p-5 h-80 md:h-96 pb-14 flex flex-col justify-between border-4 border-green-700';
 
-  /* --- Load persisted --- */
+  /* =========================
+     Persist & load
+  ========================= */
   useEffect(() => {
     try {
       const r = localStorage.getItem(RESERV_KEY);
@@ -205,13 +257,22 @@ export default function Page() {
       const sess = localStorage.getItem(SESSION_KEY);
       if (sess) setSession(JSON.parse(sess));
       const tab = localStorage.getItem(ACTIVE_TAB_KEY) as TabKey | null;
-      if (tab && ['reservatie', 'beschikbaarheid', 'ladder'].includes(tab)) {
+      if (
+        tab &&
+        [
+          'reservatie',
+          'beschikbaarheid',
+          'ladderEnkel',
+          'ladderDubbel',
+        ].includes(tab)
+      ) {
         setActiveTab(tab);
       }
+      const m = localStorage.getItem(MSG_KEY);
+      if (m) setMessages(JSON.parse(m));
     } catch {}
   }, []);
 
-  /* --- Persist --- */
   useEffect(() => {
     localStorage.setItem(RESERV_KEY, JSON.stringify(reservations));
   }, [reservations]);
@@ -234,8 +295,11 @@ export default function Page() {
   useEffect(() => {
     localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
   }, [activeTab]);
+  useEffect(() => {
+    localStorage.setItem(MSG_KEY, JSON.stringify(messages));
+  }, [messages]);
 
-  /* --- Cross-tab sync --- */
+  // Cross-tab sync
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       try {
@@ -253,17 +317,28 @@ export default function Page() {
           setSession(JSON.parse(e.newValue));
         if (e.key === ACTIVE_TAB_KEY && e.newValue) {
           const t = e.newValue as TabKey;
-          if (['reservatie', 'beschikbaarheid', 'ladder'].includes(t)) {
+          if (
+            [
+              'reservatie',
+              'beschikbaarheid',
+              'ladderEnkel',
+              'ladderDubbel',
+            ].includes(t)
+          ) {
             setActiveTab(t);
           }
         }
+        if (e.key === MSG_KEY && e.newValue)
+          setMessages(JSON.parse(e.newValue));
       } catch {}
     };
     window.addEventListener('storage', onStorage);
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  /* --- Helpers --- */
+  /* =========================
+     Helpers
+  ========================= */
   const getCourtKey = (date: string, timeSlot: string, court: number) =>
     `${date}-${timeSlot}-${court}`;
   const getMatchType = (date: string, timeSlot: string, court: number) =>
@@ -282,7 +357,6 @@ export default function Page() {
   ) => {
     const key = getCourtKey(date, timeSlot, court);
     setMatchTypes((prev) => ({ ...prev, [key]: type }));
-    setSelectedPlayers((prev) => ({ ...prev, [key]: [] }));
   };
   const setCategoryFor = (
     date: string,
@@ -304,39 +378,111 @@ export default function Page() {
     const set = new Set<string>();
     reservations.forEach((r) => {
       if (r.date === date && r.timeSlot === timeSlot)
-        r.players.forEach((p) => set.add(p));
+        r.players.filter(Boolean).forEach((p) => set.add(p));
     });
     return set;
   };
 
-  const selectedSunday = sundays.find(
-    (d) => format(d, 'yyyy-MM-dd') === selectedDate
-  );
-  const selectedIndex = sundays.findIndex(
-    (d) => format(d, 'yyyy-MM-dd') === selectedDate
-  );
-
-  const gotoPrev = () => {
-    if (selectedIndex > 0)
-      setSelectedDate(format(sundays[selectedIndex - 1], 'yyyy-MM-dd'));
-  };
-  const gotoNext = () => {
-    if (selectedIndex < sundays.length - 1)
-      setSelectedDate(format(sundays[selectedIndex + 1], 'yyyy-MM-dd'));
+  const isReservationFull = (r: Reservation) => {
+    const needed = r.matchType === 'single' ? 2 : 4;
+    if (r.players.length !== needed) return false;
+    return r.players.every((p) => !!p && typeof p === 'string');
   };
 
-  /* --- Login --- */
-  const [loginName, setLoginName] = useState(PLAYERS[0]);
-  const [loginPass, setLoginPass] = useState('');
-  const [loginErr, setLoginErr] = useState<string | null>(null);
+  const findReservation = (date: string, timeSlot: string, court: number) =>
+    reservations.find(
+      (r) => r.date === date && r.timeSlot === timeSlot && r.court === court
+    );
 
+  const ensureReservation = (
+    date: string,
+    timeSlot: string,
+    court: number
+  ): Reservation => {
+    const existing = findReservation(date, timeSlot, court);
+    if (existing) return existing;
+    const mt = getMatchType(date, timeSlot, court);
+    const cat = getCategory(date, timeSlot, court);
+    const size = mt === 'single' ? 2 : 4;
+    const fresh: Reservation = {
+      date,
+      timeSlot,
+      court,
+      matchType: mt,
+      category: cat,
+      players: Array.from({ length: size }, () => ''),
+      notifiedFull: false,
+    };
+    setReservations((prev) => [...prev, fresh]);
+    return fresh;
+  };
+
+  /* =========================
+     Meldingen
+  ========================= */
+  const pushMessage = (to: string, text: string) => {
+    const msg: Message = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      to,
+      text,
+      createdAt: Date.now(),
+      read: false,
+    };
+    setMessages((prev) => {
+      const next = [msg, ...prev];
+      // ⚠️ meteen wegschrijven — voorkomt race-conditions
+      localStorage.setItem(MSG_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const sendMatchFullMessages = (r: Reservation) => {
+    const dateLab = format(new Date(r.date), 'dd/MM', { locale: nl });
+    const text = `Match is volledig, deze zal doorgaan op ${dateLab} ${r.timeSlot} (Terrein ${r.court}).`;
+    r.players.filter(Boolean).forEach((p) => pushMessage(p, text));
+  };
+
+  // Eén plek waar we beslissen of het tijd is om berichten te sturen
+  const notifyMatchFull = (r: Reservation) => {
+    if (r.notifiedFull) return;
+    if (!isReservationFull(r)) return;
+    sendMatchFullMessages(r);
+    // markeer deze specifieke reservatie als genotificeerd
+    setReservations((prev) =>
+      prev.map((x) =>
+        x.date === r.date && x.timeSlot === r.timeSlot && x.court === r.court
+          ? { ...x, notifiedFull: true }
+          : x
+      )
+    );
+  };
+
+  const markAllRead = () => {
+    if (!myName) return;
+    setMessages((prev) =>
+      prev.map((m) => (m.to === myName ? { ...m, read: true } : m))
+    );
+  };
+
+  const unreadCount = useMemo(
+    () =>
+      myName ? messages.filter((m) => m.to === myName && !m.read).length : 0,
+    [messages, myName]
+  );
+
+  /* =========================
+     Login / Logout
+  ========================= */
   const doLogin = () => {
     setLoginErr(null);
-    if (loginName === ADMIN_NAME) {
-      if (loginPass !== ADMIN_PASSWORD) {
-        setLoginErr('Onjuist wachtwoord.');
-        return;
-      }
+    const expected = PASSWORDS[loginName];
+    if (!expected) {
+      setLoginErr('Onbekende speler.');
+      return;
+    }
+    if (loginPass !== expected) {
+      setLoginErr('Onjuist wachtwoord.');
+      return;
     }
     setSession({ playerName: loginName });
   };
@@ -345,139 +491,20 @@ export default function Page() {
     setSession(null);
   };
 
-  /* --- Reservaties --- */
-  const handlePlayerSelect = (
-    date: string,
-    timeSlot: string,
-    court: number,
-    idx: number,
-    player: string
-  ) => {
-    const key = getCourtKey(date, timeSlot, court);
-    const maxPlayers = getMatchType(date, timeSlot, court) === 'single' ? 2 : 4;
-    setSelectedPlayers((prev) => {
-      const arr = [...(prev[key] || [])];
-      while (arr.length < maxPlayers) arr.push('');
-      arr[idx] = player;
-      return { ...prev, [key]: arr };
-    });
-  };
-
-  const handleReservation = (date: string, timeSlot: string, court: number) => {
-    if (!session) return alert('Log in om te reserveren.');
-    const key = getCourtKey(date, timeSlot, court);
-    const playersData = (selectedPlayers[key] || []).filter(Boolean);
-    const matchType = getMatchType(date, timeSlot, court);
-    const category = getCategory(date, timeSlot, court);
-    const requiredPlayers = matchType === 'single' ? 2 : 4;
-
-    if (playersData.length !== requiredPlayers) {
-      alert(`Selecteer alle ${requiredPlayers} spelers voor dit terrein`);
-      return;
-    }
-
-    // Alleen spelers die beschikbaar zijn
-    const allowed = new Set(playersAvailableFor(date, timeSlot));
-    if (playersData.some((p) => !allowed.has(p))) {
-      alert('Een of meer spelers zijn niet beschikbaar in dit tijdslot.');
-      return;
-    }
-
-    // Spelers mogen maar één keer per slot
-    const slotPlayers = getPlayersInSlot(date, timeSlot);
-    if (playersData.some((p) => slotPlayers.has(p)))
-      return alert('Een van de gekozen spelers is al ingepland in dit uur.');
-
-    const existing = reservations.find(
-      (r) => r.date === date && r.timeSlot === timeSlot && r.court === court
-    );
-
-    if (existing) {
-      if (!canModifyReservation(existing))
-        return alert('Je kan enkel je eigen wedstrijden wijzigen (of admin).');
-      setReservations((prev) => {
-        const next = prev.map((r) =>
-          r.date === date && r.timeSlot === timeSlot && r.court === court
-            ? { ...r, players: playersData, matchType, category }
-            : r
-        );
-        return next;
-      });
-    } else {
-      setReservations((prev) => [
-        ...prev,
-        {
-          date,
-          timeSlot,
-          court,
-          matchType,
-          category,
-          players: playersData,
-        },
-      ]);
-    }
-
-    setSelectedPlayers((prev) => ({ ...prev, [key]: [] }));
-  };
-
-  const removeReservation = (date: string, timeSlot: string, court: number) => {
-    const res = reservations.find(
-      (r) => r.date === date && r.timeSlot === timeSlot && r.court === court
-    );
-    if (!res) return;
-    if (!canModifyReservation(res))
-      return alert('Je kan enkel je eigen wedstrijden verwijderen (of admin).');
-    const ok = window.confirm(
-      'Weet je zeker dat je deze reservatie wilt verwijderen?'
-    );
-    if (!ok) return;
-    setReservations((prev) =>
-      prev.filter(
-        (r) =>
-          !(r.date === date && r.timeSlot === timeSlot && r.court === court)
-      )
-    );
-  };
-
-  const markWinner = (res: Reservation, winner: string) => {
-    if (!session) return;
-    // Voor veiligheid: enkel admin of deelnemer
-    if (!isAdmin && !res.players.includes(myName!)) {
-      alert('Alleen admin of deelnemers kunnen de winnaar instellen.');
-      return;
-    }
-    if (res.category !== 'wedstrijd' || res.matchType !== 'single') {
-      alert('Winnaar kan enkel bij wedstrijden (single) worden ingesteld.');
-      return;
-    }
-    const loser = res.players.find((p) => p !== winner)!;
-    setReservations((prev) =>
-      prev.map((r) => (r === res ? { ...r, result: { winner, loser } } : r))
-    );
-  };
-
-  /* --- Beschikbaarheid --- */
-  const toggleAvailability = (player: string, date: string, slot: string) => {
-    setAvailability((prev) => {
-      const copy: Availability = JSON.parse(JSON.stringify(prev || {}));
-      copy[date] = copy[date] || {};
-      copy[date][slot] = copy[date][slot] || {};
-      const cur = copy[date][slot][player];
-      copy[date][slot][player] = cur === false ? true : false;
-      return copy;
-    });
-  };
-
-  /* --- Planner (admin) --- */
+  /* =========================
+     Acties: admin (planners)
+  ========================= */
   const buildCounts = (excludingDate?: string) => {
     const opponentCount: Record<string, number> = {};
     reservations.forEach((r) => {
       if (excludingDate && r.date === excludingDate) return;
       if (r.matchType === 'single') {
-        const [a, b] = r.players;
+        const [a, b] = r.players.filter(Boolean);
+        if (!a || !b) return;
         opponentCount[pairKey(a, b)] = (opponentCount[pairKey(a, b)] || 0) + 1;
       } else {
         const [x1, x2, y1, y2] = r.players;
+        if (!x1 || !x2 || !y1 || !y2) return;
         [
           [x1, y1],
           [x1, y2],
@@ -594,6 +621,7 @@ export default function Page() {
             matchType: 'single',
             category: 'wedstrijd',
             players: [a, b],
+            notifiedFull: false,
           });
           mt[getCourtKey(hr.dateStr, hr.slotId, court)] = 'single';
           cat[getCourtKey(hr.dateStr, hr.slotId, court)] = 'wedstrijd';
@@ -611,6 +639,7 @@ export default function Page() {
             matchType: 'double',
             category: 'training',
             players: [x1, x2, y1, y2],
+            notifiedFull: false,
           });
           mt[getCourtKey(hr.dateStr, hr.slotId, court)] = 'double';
           cat[getCourtKey(hr.dateStr, hr.slotId, court)] = 'training';
@@ -621,6 +650,11 @@ export default function Page() {
     setReservations(result);
     setMatchTypes(mt);
     setCategories(cat);
+
+    // Meldingen NA commit
+    setTimeout(() => {
+      result.forEach((r) => notifyMatchFull(r));
+    }, 0);
   };
 
   const planSelectedWeek = () => {
@@ -724,6 +758,7 @@ export default function Page() {
             matchType: 'single',
             category: 'wedstrijd',
             players: [a, b],
+            notifiedFull: false,
           });
           mt[getCourtKey(hr.dateStr, hr.slotId, court)] = 'single';
           cat[getCourtKey(hr.dateStr, hr.slotId, court)] = 'wedstrijd';
@@ -741,6 +776,7 @@ export default function Page() {
             matchType: 'double',
             category: 'training',
             players: [x1, x2, y1, y2],
+            notifiedFull: false,
           });
           mt[getCourtKey(hr.dateStr, hr.slotId, court)] = 'double';
           cat[getCourtKey(hr.dateStr, hr.slotId, court)] = 'training';
@@ -751,6 +787,11 @@ export default function Page() {
     setReservations((prev) => [...prev, ...result]);
     setMatchTypes((prev) => ({ ...prev, ...mt }));
     setCategories((prev) => ({ ...prev, ...cat }));
+
+    // Meldingen NA commit
+    setTimeout(() => {
+      result.forEach((r) => notifyMatchFull(r));
+    }, 0);
   };
 
   const clearAll = () => {
@@ -758,15 +799,239 @@ export default function Page() {
     const ok = window.confirm('Alle reservaties wissen?');
     if (!ok) return;
     setReservations([]);
-    setSelectedPlayers({});
+    localStorage.setItem(RESERV_KEY, JSON.stringify([]));
     setMatchTypes({});
     setCategories({});
-    localStorage.setItem(RESERV_KEY, JSON.stringify([]));
     localStorage.setItem(MATCHTYPE_KEY, JSON.stringify({}));
     localStorage.setItem(CATEGORY_KEY, JSON.stringify({}));
   };
 
-  /* --- Components --- */
+  /* =========================
+     Winner marking (single + double)
+  ========================= */
+  const markWinner = (res: Reservation, payload: string | [string, string]) => {
+    if (!session) return;
+    if (!isAdmin && !res.players.includes(myName!)) {
+      alert('Alleen admin of deelnemers kunnen de winnaar instellen.');
+      return;
+    }
+    if (res.category !== 'wedstrijd') {
+      alert('Winnaar kan enkel bij Wedstrijd worden ingesteld.');
+      return;
+    }
+
+    if (res.matchType === 'single') {
+      if (typeof payload !== 'string') return;
+      const winner = payload;
+      if (!res.players.includes(winner)) return;
+      const loser = res.players.find((p) => p && p !== winner)!;
+      setReservations((prev) =>
+        prev.map((r) => (r === res ? { ...r, result: { winner, loser } } : r))
+      );
+      return;
+    }
+
+    // double
+    if (!Array.isArray(payload) || payload.length !== 2) return;
+    const winners = payload as [string, string];
+    const [x1, x2, y1, y2] = res.players;
+    const teamA: [string, string] = [x1, x2];
+    const teamB: [string, string] = [y1, y2];
+    const sameSet = (a: [string, string], b: [string, string]) =>
+      new Set(a).size === 2 &&
+      new Set(b).size === 2 &&
+      a.every((m) => b.includes(m));
+    let losers: [string, string] | null = null;
+    if (sameSet(winners, teamA)) losers = teamB;
+    else if (sameSet(winners, teamB)) losers = teamA;
+    else {
+      alert('Winnaar-team komt niet overeen met een van de teams.');
+      return;
+    }
+    setReservations((prev) =>
+      prev.map((r) => (r === res ? { ...r, result: { winners, losers } } : r))
+    );
+  };
+
+  /* =========================
+     Self-join / leave (spelers)
+  ========================= */
+  const joinCourt = (date: string, timeSlot: string, court: number) => {
+    if (!session) return alert('Log in om deel te nemen.');
+    const availableSet = new Set(playersAvailableFor(date, timeSlot));
+    if (!availableSet.has(myName!)) {
+      alert('Je bent niet beschikbaar in dit tijdslot.');
+      return;
+    }
+    const slotPlayers = getPlayersInSlot(date, timeSlot);
+    if (slotPlayers.has(myName!)) {
+      alert('Je staat al ingepland in dit uur.');
+      return;
+    }
+
+    const existing = findReservation(date, timeSlot, court);
+    const mt = getMatchType(date, timeSlot, court);
+    const cat = getCategory(date, timeSlot, court);
+    const needed = mt === 'single' ? 2 : 4;
+
+    if (!existing) {
+      const arr = Array.from({ length: needed }, () => '');
+      arr[0] = myName!;
+      const fresh: Reservation = {
+        date,
+        timeSlot,
+        court,
+        matchType: mt,
+        category: cat,
+        players: arr,
+        notifiedFull: false,
+      };
+      setReservations((prev) => [...prev, fresh]);
+
+      // Na commit: check & meld
+      setTimeout(() => {
+        const latest = findReservation(date, timeSlot, court) || fresh;
+        notifyMatchFull(latest);
+      }, 0);
+      return;
+    }
+
+    // bestaande reservatie
+    if (existing.players.includes(myName!)) {
+      alert('Je staat al op dit terrein.');
+      return;
+    }
+    const emptyIdx = existing.players.findIndex((p) => !p);
+    if (emptyIdx === -1) {
+      alert('Dit terrein is al volledig.');
+      return;
+    }
+
+    setReservations((prev) =>
+      prev.map((r) => {
+        if (r === existing) {
+          const copy = { ...r, players: [...r.players] };
+          copy.players[emptyIdx] = myName!;
+          // Als teams wijzigen, resultaat ongeldig
+          if (copy.result) delete copy.result;
+          return copy;
+        }
+        return r;
+      })
+    );
+
+    // NA commit: actuele reservatie ophalen en (indien vol) melden
+    setTimeout(() => {
+      const latest = findReservation(date, timeSlot, court);
+      if (latest) notifyMatchFull(latest);
+    }, 0);
+  };
+
+  const leaveCourt = (res: Reservation, who: string) => {
+    if (!isAdmin && who !== myName) return;
+    setReservations((prev) =>
+      prev.map((r) => {
+        if (r !== res) return r;
+        const idx = r.players.findIndex((p) => p === who);
+        if (idx === -1) return r;
+        const copy = { ...r, players: [...r.players] };
+        copy.players[idx] = '';
+        // Resultaat ongeldig maken als teams/players wijzigen
+        delete copy.result;
+        return copy;
+      })
+    );
+  };
+
+  const removeReservation = (date: string, timeSlot: string, court: number) => {
+    const res = findReservation(date, timeSlot, court);
+    if (!res) return;
+    if (!canModifyReservation(res))
+      return alert('Je kan enkel je eigen wedstrijden verwijderen (of admin).');
+    const ok = window.confirm(
+      'Weet je zeker dat je deze reservatie wilt verwijderen?'
+    );
+    if (!ok) return;
+    setReservations((prev) =>
+      prev.filter(
+        (r) =>
+          !(r.date === date && r.timeSlot === timeSlot && r.court === court)
+      )
+    );
+  };
+
+  /* =========================
+     Beschikbaarheid
+  ========================= */
+  const toggleAvailability = (player: string, date: string, slot: string) => {
+    setAvailability((prev) => {
+      const copy: Availability = JSON.parse(JSON.stringify(prev || {}));
+      copy[date] = copy[date] || {};
+      copy[date][slot] = copy[date][slot] || {};
+      const cur = copy[date][slot][player];
+      copy[date][slot][player] = cur === false ? true : false;
+      return copy;
+    });
+  };
+
+  /* =========================
+     Winner buttons helper
+  ========================= */
+  const WinnerButtons = ({ r }: { r: Reservation }) => {
+    const mayEdit = canModifyReservation(r);
+    if (r.category !== 'wedstrijd' || !mayEdit) return null;
+
+    if (r.matchType === 'single') {
+      const winnerSingle = r.result?.winner;
+      if (winnerSingle && !isAdmin) return null;
+      return (
+        <div className="absolute bottom-3 left-3 right-3 flex flex-wrap gap-2 justify-center">
+          {r.players.filter(Boolean).map((p) => (
+            <button
+              key={p}
+              onClick={() => markWinner(r, p)}
+              className="px-3 py-1.5 rounded-full text-xs bg-white text-black hover:bg-white shadow border border-gray-200"
+              title="Markeer winnaar"
+            >
+              ✅ {p} won
+            </button>
+          ))}
+        </div>
+      );
+    }
+
+    // double
+    const [x1, x2, y1, y2] = r.players;
+    const teamA: [string, string] = [x1, x2];
+    const teamB: [string, string] = [y1, y2];
+    const winnerDoubles = r.result?.winners;
+    if (winnerDoubles && !isAdmin) return null;
+
+    return (
+      <div className="absolute bottom-3 left-3 right-3 flex flex-col sm:flex-row gap-2 justify-center">
+        <button
+          onClick={() => markWinner(r, teamA)}
+          className="px-3 py-1.5 rounded-full text-xs bg-white text-black hover:bg-white shadow border border-gray-200"
+          title="Markeer winnend team"
+          disabled={!x1 || !x2}
+        >
+          ✅ {x1 || '—'} & {x2 || '—'} wonnen
+        </button>
+        <button
+          onClick={() => markWinner(r, teamB)}
+          className="px-3 py-1.5 rounded-full text-xs bg-white text-black hover:bg-white shadow border border-gray-200"
+          title="Markeer winnend team"
+          disabled={!y1 || !y2}
+        >
+          ✅ {y1 || '—'} & {y2 || '—'} wonnen
+        </button>
+      </div>
+    );
+  };
+
+  /* =========================
+     Components
+  ========================= */
   const ReservationBadge = ({ r }: { r: Reservation }) => (
     <div className="absolute top-1 left-1 flex gap-1">
       <div className="bg-white rounded-full px-2 py-1 text-[10px] font-bold">
@@ -782,9 +1047,15 @@ export default function Page() {
       >
         {r.category === 'wedstrijd' ? 'Wedstrijd' : 'Training'}
       </div>
-      {r.result && (
+      {/* Result-badge */}
+      {r.matchType === 'single' && r.result?.winner && (
         <div className="rounded-full px-2 py-1 text-[10px] font-semibold bg-green-100 text-green-700">
           ✅ {r.result.winner}
+        </div>
+      )}
+      {r.matchType === 'double' && r.result?.winners && (
+        <div className="rounded-full px-2 py-1 text-[10px] font-semibold bg-green-100 text-green-700">
+          ✅ {r.result.winners.join(' & ')}
         </div>
       )}
     </div>
@@ -799,38 +1070,25 @@ export default function Page() {
     timeSlot: string;
     court: number;
   }) => {
-    const key = getCourtKey(date, timeSlot, court);
-    const reservation = reservations.find(
-      (r) => r.date === date && r.timeSlot === timeSlot && r.court === court
-    );
+    const reservation = findReservation(date, timeSlot, court);
     const matchType = getMatchType(date, timeSlot, court);
     const category = getCategory(date, timeSlot, court);
-    const selected = selectedPlayers[key] || [];
 
+    // Kaart met bestaande reservatie
     if (reservation) {
       const mayEdit = canModifyReservation(reservation);
-      const canMarkWinner =
-        reservation.category === 'wedstrijd' &&
-        reservation.matchType === 'single' &&
-        (!reservation.result || (reservation.result && isAdmin));
-
-      const winner = reservation.result?.winner;
-
-      const winnerButtons =
-        canMarkWinner && mayEdit ? (
-          <div className="absolute bottom-3 left-3 right-3 flex flex-wrap gap-2 justify-center">
-            {reservation.players.map((p) => (
-              <button
-                key={p}
-                onClick={() => markWinner(reservation, p)}
-                className="px-3 py-1.5 rounded-full text-xs bg-white text-black hover:bg-white shadow border border-gray-200"
-                title="Markeer winnaar"
-              >
-                ✅ {p} won
-              </button>
-            ))}
-          </div>
-        ) : null;
+      const winnerSingle = reservation.result?.winner;
+      const winnerDoubles = reservation.result?.winners;
+      const isWin = (p: string) =>
+        Array.isArray(winnerDoubles) && winnerDoubles.includes(p);
+      const iAmIn = !!myName && reservation.players.includes(myName);
+      const availableSet = new Set(playersAvailableFor(date, timeSlot));
+      const canJoin =
+        !!myName &&
+        !iAmIn &&
+        availableSet.has(myName) &&
+        !getPlayersInSlot(date, timeSlot).has(myName) &&
+        reservation.players.some((p) => !p); // er is nog plek
 
       return (
         <div className={courtClass}>
@@ -841,9 +1099,12 @@ export default function Page() {
               <div className="bg-blue-600 text-white text-center py-3 rounded border-2 border-white text-base font-semibold">
                 <div className="flex items-center justify-center">
                   <PlayerChip
-                    name={reservation.players[0]}
+                    name={reservation.players[0] || '—'}
                     size="md"
-                    highlight={winner === reservation.players[0]}
+                    highlight={
+                      !!reservation.players[0] &&
+                      winnerSingle === reservation.players[0]
+                    }
                   />
                 </div>
               </div>
@@ -851,9 +1112,12 @@ export default function Page() {
               <div className="bg-blue-600 text-white text-center py-3 rounded border-2 border-white text-base font-semibold">
                 <div className="flex items-center justify-center">
                   <PlayerChip
-                    name={reservation.players[1]}
+                    name={reservation.players[1] || '—'}
                     size="md"
-                    highlight={winner === reservation.players[1]}
+                    highlight={
+                      !!reservation.players[1] &&
+                      winnerSingle === reservation.players[1]
+                    }
                   />
                 </div>
               </div>
@@ -863,12 +1127,20 @@ export default function Page() {
               <div className="space-y-1">
                 <div className="bg-blue-600 text-white text-center py-2 rounded border-2 border-white text-sm font-semibold">
                   <div className="flex items-center justify-center">
-                    <PlayerChip name={reservation.players[0]} size="sm" />
+                    <PlayerChip
+                      name={reservation.players[0] || '—'}
+                      size="sm"
+                      highlight={isWin(reservation.players[0])}
+                    />
                   </div>
                 </div>
                 <div className="bg-blue-600 text-white text-center py-2 rounded border-2 border-white text-sm font-semibold">
                   <div className="flex items-center justify-center">
-                    <PlayerChip name={reservation.players[1]} size="sm" />
+                    <PlayerChip
+                      name={reservation.players[1] || '—'}
+                      size="sm"
+                      highlight={isWin(reservation.players[1])}
+                    />
                   </div>
                 </div>
               </div>
@@ -876,34 +1148,69 @@ export default function Page() {
               <div className="space-y-1">
                 <div className="bg-blue-600 text-white text-center py-2 rounded border-2 border-white text-sm font-semibold">
                   <div className="flex items-center justify-center">
-                    <PlayerChip name={reservation.players[2]} size="sm" />
+                    <PlayerChip
+                      name={reservation.players[2] || '—'}
+                      size="sm"
+                      highlight={isWin(reservation.players[2])}
+                    />
                   </div>
                 </div>
                 <div className="bg-blue-600 text-white text-center py-2 rounded border-2 border-white text-sm font-semibold">
                   <div className="flex items-center justify-center">
-                    <PlayerChip name={reservation.players[3]} size="sm" />
+                    <PlayerChip
+                      name={reservation.players[3] || '—'}
+                      size="sm"
+                      highlight={isWin(reservation.players[3])}
+                    />
                   </div>
                 </div>
               </div>
             </>
           )}
 
-          {mayEdit && (
-            <button
-              onClick={() => removeReservation(date, timeSlot, court)}
-              className="absolute top-1 right-1 bg-red-500 text-white rounded-full w-6 h-6 text-xs hover:bg-red-600"
-              title="Verwijder reservatie"
-            >
-              ×
-            </button>
-          )}
+          {/* Actieknoppen */}
+          <div className="absolute top-1 right-1 flex gap-1">
+            {iAmIn && (
+              <button
+                onClick={() => leaveCourt(reservation, myName!)}
+                className="bg-white text-gray-800 rounded-full px-2 py-1 text-[10px] border border-gray-200"
+                title="Ik kan toch niet"
+              >
+                Ik kan toch niet
+              </button>
+            )}
+            {canJoin && (
+              <button
+                onClick={() => joinCourt(date, timeSlot, court)}
+                className="bg-white text-gray-800 rounded-full px-2 py-1 text-[10px] border border-gray-200"
+                title="Ik speel mee"
+              >
+                Ik speel mee
+              </button>
+            )}
+            {mayEdit && (
+              <button
+                onClick={() => removeReservation(date, timeSlot, court)}
+                className="bg-red-500 text-white rounded-full w-6 h-6 text-xs hover:bg-red-600"
+                title="Verwijder reservatie"
+              >
+                ×
+              </button>
+            )}
+          </div>
 
-          {winnerButtons}
+          <WinnerButtons r={reservation} />
         </div>
       );
     }
 
-    // Geen reservatie: select UI
+    // Kaart zonder reservatie
+    const availableSet = new Set(playersAvailableFor(date, timeSlot));
+    const canFirstJoin =
+      !!myName &&
+      availableSet.has(myName) &&
+      !getPlayersInSlot(date, timeSlot).has(myName);
+
     return (
       <div className={courtClass}>
         <div className="flex justify-center gap-2 mb-2">
@@ -945,46 +1252,31 @@ export default function Page() {
           </select>
         </div>
 
-        {Array.from({ length: matchType === 'single' ? 2 : 4 }).map(
-          (_, idx) => (
-            <div key={`sel-${idx}`}>
-              <select
-                value={selected[idx] || ''}
-                onChange={(e) =>
-                  handlePlayerSelect(date, timeSlot, court, idx, e.target.value)
-                }
-                className={selectClass}
-              >
-                <option value="">Speler {idx + 1}</option>
-                {playersAvailableFor(date, timeSlot).map((p) => (
-                  <option key={p} value={p}>
-                    {p} ({scoreOf(p)})
-                  </option>
-                ))}
-              </select>
-              {(matchType === 'single' ? idx === 0 : idx === 1) && (
-                <TennisNet />
-              )}
-            </div>
-          )
-        )}
+        <div className="flex-1 grid place-items-center text-white/90 text-sm">
+          Nog geen spelers
+        </div>
 
-        <button
-          onClick={() => handleReservation(date, timeSlot, court)}
-          disabled={
-            (selectedPlayers[key] || []).filter(Boolean).length !==
-              (matchType === 'single' ? 2 : 4) ||
-            (selectedPlayers[key] || []).some((p) => !p)
-          }
-          className="w-full bg-blue-600 text-white py-2 px-3 rounded text-sm disabled:opacity-50"
-        >
-          Reserveren
-        </button>
+        <div className="pt-2">
+          <button
+            onClick={() => joinCourt(date, timeSlot, court)}
+            disabled={!canFirstJoin}
+            className="w-full bg-white text-gray-800 py-2 px-3 rounded text-sm border border-gray-200 disabled:opacity-50"
+            title={
+              canFirstJoin
+                ? 'Plaats jezelf op dit terrein'
+                : 'Niet beschikbaar of al ingepland'
+            }
+          >
+            Ik speel mee
+          </button>
+        </div>
       </div>
     );
   };
 
-  /* --- Mijn beschikbaarheid (alleen eigen speler) --- */
+  /* =========================
+     Mijn beschikbaarheid
+  ========================= */
   const MyAvailability = ({ playerName }: { playerName: string }) => {
     return (
       <div className="bg-white rounded-xl shadow p-4">
@@ -1065,8 +1357,13 @@ export default function Page() {
     );
   };
 
-  /* --- Ladder --- */
-  const LadderPage = () => {
+  /* =========================
+     Ladders (met medailles)
+  ========================= */
+  const medalFor = (rank: number) =>
+    rank === 0 ? '🥇' : rank === 1 ? '🥈' : rank === 2 ? '🥉' : '';
+
+  const LadderEnkel = () => {
     const stats = useMemo(() => {
       const s: Record<
         string,
@@ -1077,6 +1374,7 @@ export default function Page() {
         if (r.category !== 'wedstrijd' || r.matchType !== 'single' || !r.result)
           return;
         const { winner, loser } = r.result;
+        if (!winner || !loser) return;
         if (!s[winner] || !s[loser]) return;
         s[winner].wins++;
         s[winner].matches++;
@@ -1096,10 +1394,11 @@ export default function Page() {
 
     return (
       <div className="bg-white rounded-xl shadow-lg p-6">
-        <h2 className="text-2xl font-bold text-gray-800 mb-2">🏆 Ladder</h2>
+        <h2 className="text-2xl font-bold text-gray-800 mb-2">
+          🏆 Ladder enkel
+        </h2>
         <p className="text-sm text-gray-600 mb-6">
-          De ladder telt enkel <b>Wedstrijden (single)</b> met geregistreerde
-          winnaar.
+          Telt enkel <b>Wedstrijden (single)</b> met geregistreerde winnaar.
         </p>
         <div className="overflow-x-auto">
           <table className="min-w-full">
@@ -1109,7 +1408,6 @@ export default function Page() {
                 <th className="text-left py-3 px-4">Speler</th>
                 <th className="text-left py-3 px-4">Gespeeld</th>
                 <th className="text-left py-3 px-4">Gewonnen</th>
-                <th className="text-left py-3 px-4">Verloren</th>
                 <th className="text-left py-3 px-4">Win %</th>
               </tr>
             </thead>
@@ -1124,15 +1422,15 @@ export default function Page() {
                     <td className="py-3 px-4 font-bold text-gray-600">
                       #{i + 1}
                     </td>
-                    <td className="py-3 px-4">
+                    <td className="py-3 px-4 flex items-center gap-2">
+                      <span className="text-lg leading-none">
+                        {medalFor(i)}
+                      </span>
                       <PlayerChip name={player} size="md" />
                     </td>
                     <td className="py-3 px-4">{s.matches}</td>
                     <td className="py-3 px-4 text-green-600 font-semibold">
                       {s.wins}
-                    </td>
-                    <td className="py-3 px-4 text-red-600 font-semibold">
-                      {s.losses}
                     </td>
                     <td className="py-3 px-4 font-semibold">{pct}%</td>
                   </tr>
@@ -1145,7 +1443,171 @@ export default function Page() {
     );
   };
 
-  /* --- Login screen if not logged in --- */
+  const LadderDubbel = () => {
+    const stats = useMemo(() => {
+      const s: Record<string, { wins: number; matches: number }> = {};
+      PLAYERS.forEach((p) => (s[p] = { wins: 0, matches: 0 }));
+      reservations.forEach((r) => {
+        if (r.matchType !== 'double' || r.category !== 'wedstrijd') return;
+        // iedereen met ingevulde plek krijgt een match bij
+        r.players.filter(Boolean).forEach((p) => {
+          if (s[p]) s[p].matches++;
+        });
+        // beide winnaars krijgen een win
+        if (r.result?.winners && r.result.winners.length === 2) {
+          const [w1, w2] = r.result.winners;
+          if (s[w1]) s[w1].wins++;
+          if (s[w2]) s[w2].wins++;
+        }
+      });
+      return s;
+    }, [reservations]);
+
+    const sorted = PLAYERS.slice().sort((a, b) => {
+      const A = stats[a],
+        B = stats[b];
+      if (B.wins !== A.wins) return B.wins - A.wins;
+      if (B.matches !== A.matches) return B.matches - A.matches;
+      return a.localeCompare(b);
+    });
+
+    return (
+      <div className="bg-white rounded-xl shadow-lg p-6">
+        <h2 className="text-2xl font-bold text-gray-800 mb-2">
+          👥 Ladder dubbel
+        </h2>
+        <p className="text-sm text-gray-600 mb-6">
+          Telt enkel <b>Wedstrijden (double)</b> met geregistreerd winnend team.
+          Beide winnaars krijgen 1 win.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="min-w-full">
+            <thead>
+              <tr className="border-b">
+                <th className="text-left py-3 px-4">Positie</th>
+                <th className="text-left py-3 px-4">Speler</th>
+                <th className="text-left py-3 px-4">Gespeeld</th>
+                <th className="text-left py-3 px-4">Gewonnen</th>
+                <th className="text-left py-3 px-4">Win %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((player, i) => {
+                const s = stats[player];
+                const pct = s.matches
+                  ? Math.round((s.wins / s.matches) * 100)
+                  : 0;
+                return (
+                  <tr key={player} className="border-b hover:bg-gray-50">
+                    <td className="py-3 px-4 font-bold text-gray-600">
+                      #{i + 1}
+                    </td>
+                    <td className="py-3 px-4 flex items-center gap-2">
+                      <span className="text-lg leading-none">
+                        {medalFor(i)}
+                      </span>
+                      <PlayerChip name={player} size="md" />
+                    </td>
+                    <td className="py-3 px-4">{s.matches}</td>
+                    <td className="py-3 px-4 text-green-600 font-semibold">
+                      {s.wins}
+                    </td>
+                    <td className="py-3 px-4 font-semibold">{pct}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
+
+  /* =========================
+     Notifications UI
+  ========================= */
+  const [notifOpen, setNotifOpen] = useState(false);
+  const NotificationsPanel = () => {
+    if (!myName) return null;
+    const mine = messages
+      .filter((m) => m.to === myName)
+      .sort((a, b) => b.createdAt - a.createdAt);
+
+    return (
+      <div className="relative">
+        <button
+          onClick={() => {
+            setNotifOpen((v) => !v);
+            if (!notifOpen) markAllRead();
+          }}
+          className="relative bg-white border border-gray-300 rounded px-3 py-2 text-sm text-gray-900"
+          title="Meldingen"
+        >
+          🔔 Meldingen
+          {unreadCount > 0 && (
+            <span className="ml-2 inline-flex items-center justify-center min-w-5 h-5 text-xs rounded-full bg-red-600 text-white px-1">
+              {unreadCount}
+            </span>
+          )}
+        </button>
+
+        {notifOpen && (
+          <div className="absolute right-0 mt-2 w-96 max-w-[90vw] bg-white rounded-xl shadow-xl border border-gray-200 z-50">
+            <div className="p-3 border-b flex items-center justify-between">
+              <div className="font-semibold text-gray-800">Meldingen</div>
+              <button
+                onClick={() => setNotifOpen(false)}
+                className="text-gray-500 hover:text-gray-800"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="max-h-96 overflow-auto p-3">
+              {mine.length === 0 ? (
+                <p className="text-sm text-gray-500">Geen meldingen.</p>
+              ) : (
+                <ul className="space-y-2">
+                  {mine.map((m) => (
+                    <li
+                      key={m.id}
+                      className="p-2 bg-white border rounded text-sm text-gray-800"
+                    >
+                      {m.text}
+                      <div className="mt-1 text-[10px] text-gray-500">
+                        {new Date(m.createdAt).toLocaleString()}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  /* =========================
+     Navigation helpers
+  ========================= */
+  const selectedSunday = sundays.find(
+    (d) => format(d, 'yyyy-MM-dd') === selectedDate
+  );
+  const selectedIndex = sundays.findIndex(
+    (d) => format(d, 'yyyy-MM-dd') === selectedDate
+  );
+  const gotoPrev = () => {
+    if (selectedIndex > 0)
+      setSelectedDate(format(sundays[selectedIndex - 1], 'yyyy-MM-dd'));
+  };
+  const gotoNext = () => {
+    if (selectedIndex < sundays.length - 1)
+      setSelectedDate(format(sundays[selectedIndex + 1], 'yyyy-MM-dd'));
+  };
+
+  /* =========================
+     Login screen
+  ========================= */
   if (!session) {
     return (
       <div className="min-h-screen bg-gray-100 p-4 grid place-items-center">
@@ -1180,23 +1642,18 @@ export default function Page() {
             </select>
           </div>
 
-          {loginName === ADMIN_NAME && (
-            <div className="mb-4">
-              <label className="block text-sm text-gray-700 mb-1">
-                Wachtwoord (admin)
-              </label>
-              <input
-                type="password"
-                className={inputClass}
-                placeholder="••••••••"
-                value={loginPass}
-                onChange={(e) => setLoginPass(e.target.value)}
-              />
-              <p className="text-[11px] text-gray-500 mt-1">
-                Alleen vereist voor {ADMIN_NAME}.
-              </p>
-            </div>
-          )}
+          <div className="mb-4">
+            <label className="block text-sm text-gray-700 mb-1">
+              Wachtwoord
+            </label>
+            <input
+              type="password"
+              className={inputClass}
+              placeholder="••••••••"
+              value={loginPass}
+              onChange={(e) => setLoginPass(e.target.value)}
+            />
+          </div>
 
           <button
             onClick={doLogin}
@@ -1209,7 +1666,9 @@ export default function Page() {
     );
   }
 
-  /* --- Main render --- */
+  /* =========================
+     Main render
+  ========================= */
   return (
     <div className="min-h-screen bg-gray-100 p-4">
       <div className="max-w-7xl mx-auto">
@@ -1226,6 +1685,7 @@ export default function Page() {
           </div>
 
           <div className="flex items-center flex-wrap gap-2">
+            <NotificationsPanel />
             {isAdmin && (
               <>
                 <button
@@ -1260,7 +1720,7 @@ export default function Page() {
         {/* Tabs */}
         <div className="mb-6">
           <div className="border-b border-gray-200">
-            <nav className="-mb-px flex space-x-8">
+            <nav className="-mb-px flex gap-4 overflow-x-auto">
               <button
                 onClick={() => setActiveTab('reservatie')}
                 className={`py-2 px-1 border-b-2 font-medium text-sm ${
@@ -1282,22 +1742,33 @@ export default function Page() {
                 📅 Mijn beschikbaarheid
               </button>
               <button
-                onClick={() => setActiveTab('ladder')}
+                onClick={() => setActiveTab('ladderEnkel')}
                 className={`py-2 px-1 border-b-2 font-medium text-sm ${
-                  activeTab === 'ladder'
+                  activeTab === 'ladderEnkel'
                     ? 'border-green-500 text-green-600'
                     : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                 }`}
               >
-                🏆 Ladder
+                🏆 Ladder enkel
+              </button>
+              <button
+                onClick={() => setActiveTab('ladderDubbel')}
+                className={`py-2 px-1 border-b-2 font-medium text-sm ${
+                  activeTab === 'ladderDubbel'
+                    ? 'border-green-500 text-green-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                👥 Ladder dubbel
               </button>
             </nav>
           </div>
         </div>
 
-        {/* Tab: Reservatie (datum + terreinen) */}
+        {/* Tab: Reservatie */}
         {activeTab === 'reservatie' && (
           <>
+            {/* Date navigation */}
             <div className="my-6 flex items-center justify-center gap-2">
               <button
                 onClick={gotoPrev}
@@ -1330,6 +1801,7 @@ export default function Page() {
               </button>
             </div>
 
+            {/* Geselecteerde speeldag */}
             {selectedSunday &&
               (() => {
                 const dateStr = format(selectedSunday, 'yyyy-MM-dd');
@@ -1378,13 +1850,14 @@ export default function Page() {
           </>
         )}
 
-        {/* Tab: Beschikbaarheid (enkel eigen beschikbaarheid) */}
+        {/* Tab: Beschikbaarheid */}
         {activeTab === 'beschikbaarheid' && (
           <MyAvailability playerName={myName!} />
         )}
 
-        {/* Tab: Ladder */}
-        {activeTab === 'ladder' && <LadderPage />}
+        {/* Tab: Ladders */}
+        {activeTab === 'ladderEnkel' && <LadderEnkel />}
+        {activeTab === 'ladderDubbel' && <LadderDubbel />}
 
         {/* Footer */}
         <div className="mt-6 text-center text-sm text-gray-500">
