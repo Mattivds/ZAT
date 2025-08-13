@@ -28,7 +28,7 @@ interface Reservation {
     winners?: [string, string];
     losers?: [string, string];
   };
-  // Meldingen: eenmaal vol => true, zodat we niet dubbel sturen
+  // Markering om dubbele meldingen te vermijden zodra match voor het eerst vol is
   notifiedFull?: boolean;
 }
 
@@ -167,28 +167,25 @@ const PlayerChip = ({
   );
 };
 
+/** Echte net-look met raster + witte band bovenaan */
 const TennisNet = () => (
-  <div className="relative w-full h-10 my-1" aria-hidden>
-    {/* Witte band boven */}
-    <div className="absolute top-0 left-0 right-0 h-1.5 bg-white rounded-sm shadow-sm" />
-    {/* Net-raster */}
+  <div className="relative w-full my-1 h-10" aria-hidden>
+    {/* Witte band */}
+    <div className="absolute left-0 right-0 top-0 h-2 bg-white rounded-sm shadow-sm" />
+    {/* Raster */}
     <div
       className="absolute left-0 right-0 bottom-0"
       style={{
-        top: '0.6rem',
+        top: '0.5rem',
         backgroundImage:
-          // verticale draden
-          'linear-gradient(to right, rgba(255,255,255,0.5) 1px, transparent 1px),' +
-          // horizontale draden
-          'linear-gradient(to bottom, rgba(255,255,255,0.45) 1px, transparent 1px)',
+          'linear-gradient(to right, rgba(255,255,255,0.85) 1px, transparent 1px),' +
+          'linear-gradient(to bottom, rgba(255,255,255,0.85) 1px, transparent 1px)',
         backgroundSize: '8px 8px',
-        backgroundPosition: 'center',
+        backgroundColor: 'rgba(0,0,0,0.15)',
+        borderTop: '1px solid rgba(255,255,255,0.6)',
+        borderBottom: '1px solid rgba(255,255,255,0.6)',
       }}
     />
-    {/* Dikte/koord net */}
-    <div className="absolute left-0 right-0" style={{ top: '0.6rem' }}>
-      <div className="border-t border-white/60" />
-    </div>
   </div>
 );
 
@@ -411,7 +408,6 @@ export default function Page() {
       matchType: mt,
       category: cat,
       players: Array.from({ length: size }, () => ''),
-      notifiedFull: false,
     };
     setReservations((prev) => [...prev, fresh]);
     return fresh;
@@ -428,47 +424,21 @@ export default function Page() {
       createdAt: Date.now(),
       read: false,
     };
-    setMessages((prev) => {
-      const next = [msg, ...prev];
-      // ⚠️ meteen wegschrijven — voorkomt race-conditions
-      localStorage.setItem(MSG_KEY, JSON.stringify(next));
-      return next;
-    });
+    setMessages((prev) => [msg, ...prev]);
   };
 
   const sendMatchFullMessages = (r: Reservation) => {
     const dateLab = format(new Date(r.date), 'dd/MM', { locale: nl });
-    const text = `Match is volledig, deze zal doorgaan op ${dateLab} ${r.timeSlot} (Terrein ${r.court}).`;
-    r.players.filter(Boolean).forEach((p) => pushMessage(p, text));
+    const text = `Match is volledig: ${dateLab} ${r.timeSlot} (Terrein ${r.court}).`;
+    // 1 melding per speler
+    const uniq = new Set<string>();
+    r.players.filter(Boolean).forEach((p) => {
+      if (!uniq.has(p)) {
+        pushMessage(p, text);
+        uniq.add(p);
+      }
+    });
   };
-
-  // Eén plek waar we beslissen of het tijd is om berichten te sturen
-  const notifyMatchFull = (r: Reservation) => {
-    if (r.notifiedFull) return;
-    if (!isReservationFull(r)) return;
-    sendMatchFullMessages(r);
-    // markeer deze specifieke reservatie als genotificeerd
-    setReservations((prev) =>
-      prev.map((x) =>
-        x.date === r.date && x.timeSlot === r.timeSlot && x.court === r.court
-          ? { ...x, notifiedFull: true }
-          : x
-      )
-    );
-  };
-
-  const markAllRead = () => {
-    if (!myName) return;
-    setMessages((prev) =>
-      prev.map((m) => (m.to === myName ? { ...m, read: true } : m))
-    );
-  };
-
-  const unreadCount = useMemo(
-    () =>
-      myName ? messages.filter((m) => m.to === myName && !m.read).length : 0,
-    [messages, myName]
-  );
 
   /* =========================
      Login / Logout
@@ -614,15 +584,17 @@ export default function Page() {
           const [a, b] = pair;
           used.add(a);
           used.add(b);
-          result.push({
+          const res: Reservation = {
             date: hr.dateStr,
             timeSlot: hr.slotId,
             court,
             matchType: 'single',
             category: 'wedstrijd',
             players: [a, b],
-            notifiedFull: false,
-          });
+            notifiedFull: true,
+          };
+          result.push(res);
+          sendMatchFullMessages(res);
           mt[getCourtKey(hr.dateStr, hr.slotId, court)] = 'single';
           cat[getCourtKey(hr.dateStr, hr.slotId, court)] = 'wedstrijd';
         } else {
@@ -632,15 +604,17 @@ export default function Page() {
           const [x1, x2] = teamA,
             [y1, y2] = teamB;
           [x1, x2, y1, y2].forEach((p) => used.add(p));
-          result.push({
+          const res: Reservation = {
             date: hr.dateStr,
             timeSlot: hr.slotId,
             court,
             matchType: 'double',
             category: 'training',
             players: [x1, x2, y1, y2],
-            notifiedFull: false,
-          });
+            notifiedFull: true,
+          };
+          result.push(res);
+          sendMatchFullMessages(res);
           mt[getCourtKey(hr.dateStr, hr.slotId, court)] = 'double';
           cat[getCourtKey(hr.dateStr, hr.slotId, court)] = 'training';
         }
@@ -650,11 +624,6 @@ export default function Page() {
     setReservations(result);
     setMatchTypes(mt);
     setCategories(cat);
-
-    // Meldingen NA commit
-    setTimeout(() => {
-      result.forEach((r) => notifyMatchFull(r));
-    }, 0);
   };
 
   const planSelectedWeek = () => {
@@ -751,15 +720,17 @@ export default function Page() {
           const [a, b] = pair;
           used.add(a);
           used.add(b);
-          result.push({
+          const res: Reservation = {
             date: hr.dateStr,
             timeSlot: hr.slotId,
             court,
             matchType: 'single',
             category: 'wedstrijd',
             players: [a, b],
-            notifiedFull: false,
-          });
+            notifiedFull: true,
+          };
+          result.push(res);
+          sendMatchFullMessages(res);
           mt[getCourtKey(hr.dateStr, hr.slotId, court)] = 'single';
           cat[getCourtKey(hr.dateStr, hr.slotId, court)] = 'wedstrijd';
         } else {
@@ -769,15 +740,17 @@ export default function Page() {
           const [x1, x2] = teamA,
             [y1, y2] = teamB;
           [x1, x2, y1, y2].forEach((p) => used.add(p));
-          result.push({
+          const res: Reservation = {
             date: hr.dateStr,
             timeSlot: hr.slotId,
             court,
             matchType: 'double',
             category: 'training',
             players: [x1, x2, y1, y2],
-            notifiedFull: false,
-          });
+            notifiedFull: true,
+          };
+          result.push(res);
+          sendMatchFullMessages(res);
           mt[getCourtKey(hr.dateStr, hr.slotId, court)] = 'double';
           cat[getCourtKey(hr.dateStr, hr.slotId, court)] = 'training';
         }
@@ -787,11 +760,6 @@ export default function Page() {
     setReservations((prev) => [...prev, ...result]);
     setMatchTypes((prev) => ({ ...prev, ...mt }));
     setCategories((prev) => ({ ...prev, ...cat }));
-
-    // Meldingen NA commit
-    setTimeout(() => {
-      result.forEach((r) => notifyMatchFull(r));
-    }, 0);
   };
 
   const clearAll = () => {
@@ -837,11 +805,13 @@ export default function Page() {
     const [x1, x2, y1, y2] = res.players;
     const teamA: [string, string] = [x1, x2];
     const teamB: [string, string] = [y1, y2];
+
     const sameSet = (a: [string, string], b: [string, string]) =>
       new Set(a).size === 2 &&
       new Set(b).size === 2 &&
       a.every((m) => b.includes(m));
-    let losers: [string, string] | null = null;
+
+    let losers: [string, string] | undefined;
     if (sameSet(winners, teamA)) losers = teamB;
     else if (sameSet(winners, teamB)) losers = teamA;
     else {
@@ -884,19 +854,20 @@ export default function Page() {
         matchType: mt,
         category: cat,
         players: arr,
-        notifiedFull: false,
+        notifiedFull: isReservationFull({
+          date,
+          timeSlot,
+          court,
+          matchType: mt,
+          category: cat,
+          players: arr,
+        } as Reservation),
       };
       setReservations((prev) => [...prev, fresh]);
-
-      // Na commit: check & meld
-      setTimeout(() => {
-        const latest = findReservation(date, timeSlot, court) || fresh;
-        notifyMatchFull(latest);
-      }, 0);
+      if (fresh.notifiedFull) sendMatchFullMessages(fresh);
       return;
     }
 
-    // bestaande reservatie
     if (existing.players.includes(myName!)) {
       alert('Je staat al op dit terrein.');
       return;
@@ -907,24 +878,37 @@ export default function Page() {
       return;
     }
 
+    // Bepaal vooraf of we vol worden
+    const newPlayers = [...existing.players];
+    newPlayers[emptyIdx] = myName!;
+    const willBeFull = newPlayers.every((p) => !!p);
+
     setReservations((prev) =>
       prev.map((r) => {
-        if (r === existing) {
-          const copy = { ...r, players: [...r.players] };
-          copy.players[emptyIdx] = myName!;
-          // Als teams wijzigen, resultaat ongeldig
-          if (copy.result) delete copy.result;
-          return copy;
-        }
-        return r;
+        if (r !== existing) return r;
+        const copy: Reservation = {
+          ...r,
+          players: newPlayers,
+          // markeer enkel wanneer we NU voor het eerst vol worden
+          notifiedFull: r.notifiedFull || willBeFull,
+        };
+        // Resultaat ongeldig zodra samenstelling wijzigde
+        if (willBeFull === false) delete copy.result;
+        return copy;
       })
     );
 
-    // NA commit: actuele reservatie ophalen en (indien vol) melden
-    setTimeout(() => {
-      const latest = findReservation(date, timeSlot, court);
-      if (latest) notifyMatchFull(latest);
-    }, 0);
+    // Stuur meldingen één keer, zonder extra setTimeout
+    if (!existing.notifiedFull && willBeFull) {
+      const fullRes: Reservation = {
+        ...existing,
+        players: newPlayers,
+        notifiedFull: true,
+        matchType: mt,
+        category: cat,
+      };
+      sendMatchFullMessages(fullRes);
+    }
   };
 
   const leaveCourt = (res: Reservation, who: string) => {
@@ -934,8 +918,10 @@ export default function Page() {
         if (r !== res) return r;
         const idx = r.players.findIndex((p) => p === who);
         if (idx === -1) return r;
-        const copy = { ...r, players: [...r.players] };
+        const copy: Reservation = { ...r, players: [...r.players] };
         copy.players[idx] = '';
+        // Match is niet meer vol -> terug open, reset notifiedFull
+        copy.notifiedFull = false;
         // Resultaat ongeldig maken als teams/players wijzigen
         delete copy.result;
         return copy;
@@ -1204,7 +1190,7 @@ export default function Page() {
       );
     }
 
-    // Kaart zonder reservatie
+    // Kaart zonder reservatie: iedereen ziet type-selecties (eerste speler kan meteen 'Ik speel mee')
     const availableSet = new Set(playersAvailableFor(date, timeSlot));
     const canFirstJoin =
       !!myName &&
@@ -1236,7 +1222,7 @@ export default function Page() {
           </button>
           <select
             className="px-2 py-1 rounded text-sm bg-white border border-gray-300"
-            value={category}
+            value={getCategory(date, timeSlot, court)}
             onChange={(e) =>
               setCategoryFor(
                 date,
@@ -1365,11 +1351,8 @@ export default function Page() {
 
   const LadderEnkel = () => {
     const stats = useMemo(() => {
-      const s: Record<
-        string,
-        { wins: number; losses: number; matches: number }
-      > = {};
-      PLAYERS.forEach((p) => (s[p] = { wins: 0, losses: 0, matches: 0 }));
+      const s: Record<string, { wins: number; matches: number }> = {};
+      PLAYERS.forEach((p) => (s[p] = { wins: 0, matches: 0 }));
       reservations.forEach((r) => {
         if (r.category !== 'wedstrijd' || r.matchType !== 'single' || !r.result)
           return;
@@ -1378,7 +1361,6 @@ export default function Page() {
         if (!s[winner] || !s[loser]) return;
         s[winner].wins++;
         s[winner].matches++;
-        s[loser].losses++;
         s[loser].matches++;
       });
       return s;
@@ -1449,11 +1431,9 @@ export default function Page() {
       PLAYERS.forEach((p) => (s[p] = { wins: 0, matches: 0 }));
       reservations.forEach((r) => {
         if (r.matchType !== 'double' || r.category !== 'wedstrijd') return;
-        // iedereen met ingevulde plek krijgt een match bij
         r.players.filter(Boolean).forEach((p) => {
           if (s[p]) s[p].matches++;
         });
-        // beide winnaars krijgen een win
         if (r.result?.winners && r.result.winners.length === 2) {
           const [w1, w2] = r.result.winners;
           if (s[w1]) s[w1].wins++;
@@ -1532,6 +1512,14 @@ export default function Page() {
     const mine = messages
       .filter((m) => m.to === myName)
       .sort((a, b) => b.createdAt - a.createdAt);
+
+    const unreadCount = mine.filter((m) => !m.read).length;
+
+    const markAllRead = () => {
+      setMessages((prev) =>
+        prev.map((m) => (m.to === myName ? { ...m, read: true } : m))
+      );
+    };
 
     return (
       <div className="relative">
