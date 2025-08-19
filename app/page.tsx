@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { addWeeks, format } from 'date-fns';
 import { nl } from 'date-fns/locale';
+import { supabase } from '@/lib/supabaseClient';
 
 /* =========================
    Types
@@ -10,6 +11,7 @@ import { nl } from 'date-fns/locale';
 type MatchCategory = 'training' | 'wedstrijd';
 
 interface Reservation {
+  id: string;
   date: string; // yyyy-MM-dd
   timeSlot: string; // '18u30-19u30'
   court: number; // 1..3
@@ -210,6 +212,7 @@ export default function Page() {
 
   /* --- Core state --- */
   const [reservations, setReservations] = useState<Reservation[]>([]);
+  const [partnerSelections, setPartnerSelections] = useState<Record<string, string>>({});
   const [availability, setAvailability] = useState<Availability>({});
   const [matchTypes, setMatchTypes] = useState<
     Record<string, 'single' | 'double'>
@@ -240,38 +243,62 @@ export default function Page() {
      Persist & load
   ========================= */
   useEffect(() => {
-    try {
-      const r = localStorage.getItem(RESERV_KEY);
-      if (r) setReservations(JSON.parse(r));
-      const a = localStorage.getItem(AVAIL_KEY);
-      if (a) setAvailability(JSON.parse(a));
-      const mt = localStorage.getItem(MATCHTYPE_KEY);
-      if (mt) setMatchTypes(JSON.parse(mt));
-      const cat = localStorage.getItem(CATEGORY_KEY);
-      if (cat) setCategories(JSON.parse(cat));
-      const sd = localStorage.getItem(SELECTED_DATE_KEY);
-      if (sd) setSelectedDate(sd);
-      const sess = localStorage.getItem(SESSION_KEY);
-      if (sess) setSession(JSON.parse(sess));
-      const tab = localStorage.getItem(ACTIVE_TAB_KEY) as TabKey | null;
-      if (
-        tab &&
-        [
-          'reservatie',
-          'beschikbaarheid',
-          'ladderEnkel',
-          'ladderDubbel',
-        ].includes(tab)
-      ) {
-        setActiveTab(tab);
-      }
-      const m = localStorage.getItem(MSG_KEY);
-      if (m) setMessages(JSON.parse(m));
-    } catch {}
+    const load = async () => {
+      try {
+        const r = localStorage.getItem(RESERV_KEY);
+        if (r) setReservations(JSON.parse(r));
+        const a = localStorage.getItem(AVAIL_KEY);
+        if (a) setAvailability(JSON.parse(a));
+        const mt = localStorage.getItem(MATCHTYPE_KEY);
+        if (mt) setMatchTypes(JSON.parse(mt));
+        const cat = localStorage.getItem(CATEGORY_KEY);
+        if (cat) setCategories(JSON.parse(cat));
+        const sd = localStorage.getItem(SELECTED_DATE_KEY);
+        if (sd) setSelectedDate(sd);
+        const sess = localStorage.getItem(SESSION_KEY);
+        if (sess) setSession(JSON.parse(sess));
+        const tab = localStorage.getItem(ACTIVE_TAB_KEY) as TabKey | null;
+        if (
+          tab &&
+          [
+            'reservatie',
+            'beschikbaarheid',
+            'ladderEnkel',
+            'ladderDubbel',
+          ].includes(tab)
+        ) {
+          setActiveTab(tab);
+        }
+        const m = localStorage.getItem(MSG_KEY);
+        if (m) setMessages(JSON.parse(m));
+      } catch {}
+      const { data } = await supabase.from('reservations').select('*');
+      if (data) setReservations(data as Reservation[]);
+    };
+    load();
+    const channel = supabase
+      .channel('public:reservations')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'reservations' },
+        () => {
+          supabase
+            .from('reservations')
+            .select('*')
+            .then(({ data }) => {
+              if (data) setReservations(data as Reservation[]);
+            });
+        }
+      )
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   useEffect(() => {
     localStorage.setItem(RESERV_KEY, JSON.stringify(reservations));
+    supabase.from('reservations').upsert(reservations);
   }, [reservations]);
   useEffect(() => {
     localStorage.setItem(AVAIL_KEY, JSON.stringify(availability));
@@ -402,6 +429,7 @@ export default function Page() {
     const cat = getCategory(date, timeSlot, court);
     const size = mt === 'single' ? 2 : 4;
     const fresh: Reservation = {
+      id: crypto.randomUUID(),
       date,
       timeSlot,
       court,
@@ -585,6 +613,7 @@ export default function Page() {
           used.add(a);
           used.add(b);
           const res: Reservation = {
+            id: crypto.randomUUID(),
             date: hr.dateStr,
             timeSlot: hr.slotId,
             court,
@@ -605,6 +634,7 @@ export default function Page() {
             [y1, y2] = teamB;
           [x1, x2, y1, y2].forEach((p) => used.add(p));
           const res: Reservation = {
+            id: crypto.randomUUID(),
             date: hr.dateStr,
             timeSlot: hr.slotId,
             court,
@@ -626,10 +656,11 @@ export default function Page() {
     setCategories(cat);
   };
 
-  const planSelectedWeek = () => {
+  const planSelectedWeek = async () => {
     if (!isAdmin) return;
     const dateStr = selectedDate;
     setReservations((prev) => prev.filter((r) => r.date !== dateStr));
+    await supabase.from('reservations').delete().eq('date', dateStr);
 
     const { opponentCount } = buildCounts(dateStr);
     const hours = TIME_SLOTS.map((slot) => ({
@@ -721,6 +752,7 @@ export default function Page() {
           used.add(a);
           used.add(b);
           const res: Reservation = {
+            id: crypto.randomUUID(),
             date: hr.dateStr,
             timeSlot: hr.slotId,
             court,
@@ -741,6 +773,7 @@ export default function Page() {
             [y1, y2] = teamB;
           [x1, x2, y1, y2].forEach((p) => used.add(p));
           const res: Reservation = {
+            id: crypto.randomUUID(),
             date: hr.dateStr,
             timeSlot: hr.slotId,
             court,
@@ -772,6 +805,7 @@ export default function Page() {
     setCategories({});
     localStorage.setItem(MATCHTYPE_KEY, JSON.stringify({}));
     localStorage.setItem(CATEGORY_KEY, JSON.stringify({}));
+    supabase.from('reservations').delete().neq('id', '');
   };
 
   /* =========================
@@ -826,11 +860,20 @@ export default function Page() {
   /* =========================
      Self-join / leave (spelers)
   ========================= */
-  const joinCourt = (date: string, timeSlot: string, court: number) => {
+  const joinCourt = (
+    date: string,
+    timeSlot: string,
+    court: number,
+    partner?: string
+  ) => {
     if (!session) return alert('Log in om deel te nemen.');
     const availableSet = new Set(playersAvailableFor(date, timeSlot));
     if (!availableSet.has(myName!)) {
       alert('Je bent niet beschikbaar in dit tijdslot.');
+      return;
+    }
+    if (partner && !availableSet.has(partner)) {
+      alert(`${partner} is niet beschikbaar in dit tijdslot.`);
       return;
     }
     const slotPlayers = getPlayersInSlot(date, timeSlot);
@@ -838,16 +881,23 @@ export default function Page() {
       alert('Je staat al ingepland in dit uur.');
       return;
     }
+    if (partner && slotPlayers.has(partner)) {
+      alert(`${partner} is al ingepland in dit uur.`);
+      return;
+    }
 
     const existing = findReservation(date, timeSlot, court);
     const mt = getMatchType(date, timeSlot, court);
     const cat = getCategory(date, timeSlot, court);
     const needed = mt === 'single' ? 2 : 4;
+    const key = getCourtKey(date, timeSlot, court);
 
     if (!existing) {
       const arr = Array.from({ length: needed }, () => '');
       arr[0] = myName!;
+      if (partner && mt === 'single') arr[1] = partner;
       const fresh: Reservation = {
+        id: crypto.randomUUID(),
         date,
         timeSlot,
         court,
@@ -855,6 +905,7 @@ export default function Page() {
         category: cat,
         players: arr,
         notifiedFull: isReservationFull({
+          id: '',
           date,
           timeSlot,
           court,
@@ -865,11 +916,19 @@ export default function Page() {
       };
       setReservations((prev) => [...prev, fresh]);
       if (fresh.notifiedFull) sendMatchFullMessages(fresh);
+      setPartnerSelections((prev) => {
+        const { [key]: _, ...rest } = prev;
+        return rest;
+      });
       return;
     }
 
     if (existing.players.includes(myName!)) {
       alert('Je staat al op dit terrein.');
+      return;
+    }
+    if (partner && existing.players.includes(partner)) {
+      alert(`${partner} staat al op dit terrein.`);
       return;
     }
     const emptyIdx = existing.players.findIndex((p) => !p);
@@ -881,6 +940,14 @@ export default function Page() {
     // Bepaal vooraf of we vol worden
     const newPlayers = [...existing.players];
     newPlayers[emptyIdx] = myName!;
+    if (partner && mt === 'single') {
+      const secondIdx = newPlayers.findIndex((p) => !p);
+      if (secondIdx === -1) {
+        alert('Dit terrein is al volledig.');
+        return;
+      }
+      newPlayers[secondIdx] = partner;
+    }
     const willBeFull = newPlayers.every((p) => !!p);
 
     setReservations((prev) =>
@@ -909,6 +976,10 @@ export default function Page() {
       };
       sendMatchFullMessages(fullRes);
     }
+    setPartnerSelections((prev) => {
+      const { [key]: _, ...rest } = prev;
+      return rest;
+    });
   };
 
   const leaveCourt = (res: Reservation, who: string) => {
@@ -929,7 +1000,11 @@ export default function Page() {
     );
   };
 
-  const removeReservation = (date: string, timeSlot: string, court: number) => {
+  const removeReservation = async (
+    date: string,
+    timeSlot: string,
+    court: number
+  ) => {
     const res = findReservation(date, timeSlot, court);
     if (!res) return;
     if (!canModifyReservation(res))
@@ -944,6 +1019,7 @@ export default function Page() {
           !(r.date === date && r.timeSlot === timeSlot && r.court === court)
       )
     );
+    await supabase.from('reservations').delete().eq('id', res.id);
   };
 
   /* =========================
@@ -1166,13 +1242,48 @@ export default function Page() {
               </button>
             )}
             {canJoin && (
-              <button
-                onClick={() => joinCourt(date, timeSlot, court)}
-                className="bg-white text-gray-800 rounded-full px-2 py-1 text-[10px] border border-gray-200"
-                title="Ik speel mee"
-              >
-                Ik speel mee
-              </button>
+              <>
+                {matchType === 'single' && (
+                  <select
+                    value={
+                      partnerSelections[getCourtKey(date, timeSlot, court)] || ''
+                    }
+                    onChange={(e) =>
+                      setPartnerSelections((prev) => ({
+                        ...prev,
+                        [getCourtKey(date, timeSlot, court)]: e.target.value,
+                      }))
+                    }
+                    className="bg-white text-gray-800 rounded-full px-2 py-1 text-[10px] border border-gray-200"
+                  >
+                    <option value="">Alleen mezelf</option>
+                    {PLAYERS.filter(
+                      (p) =>
+                        p !== myName &&
+                        availableSet.has(p) &&
+                        !getPlayersInSlot(date, timeSlot).has(p)
+                    ).map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <button
+                  onClick={() =>
+                    joinCourt(
+                      date,
+                      timeSlot,
+                      court,
+                      partnerSelections[getCourtKey(date, timeSlot, court)]
+                    )
+                  }
+                  className="bg-white text-gray-800 rounded-full px-2 py-1 text-[10px] border border-gray-200"
+                  title="Ik speel mee"
+                >
+                  Ik speel mee
+                </button>
+              </>
             )}
             {mayEdit && (
               <button
@@ -1244,8 +1355,41 @@ export default function Page() {
         </div>
 
         <div className="pt-2">
+          {matchType === 'single' && (
+            <select
+              value={
+                partnerSelections[getCourtKey(date, timeSlot, court)] || ''
+              }
+              onChange={(e) =>
+                setPartnerSelections((prev) => ({
+                  ...prev,
+                  [getCourtKey(date, timeSlot, court)]: e.target.value,
+                }))
+              }
+              className="w-full mb-2 bg-white text-gray-800 py-2 px-3 rounded text-sm border border-gray-200"
+            >
+              <option value="">Alleen mezelf</option>
+              {PLAYERS.filter(
+                (p) =>
+                  p !== myName &&
+                  availableSet.has(p) &&
+                  !getPlayersInSlot(date, timeSlot).has(p)
+              ).map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+          )}
           <button
-            onClick={() => joinCourt(date, timeSlot, court)}
+            onClick={() =>
+              joinCourt(
+                date,
+                timeSlot,
+                court,
+                partnerSelections[getCourtKey(date, timeSlot, court)]
+              )
+            }
             disabled={!canFirstJoin}
             className="w-full bg-white text-gray-800 py-2 px-3 rounded text-sm border border-gray-200 disabled:opacity-50"
             title={
